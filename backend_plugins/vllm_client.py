@@ -1,6 +1,7 @@
 from . import BackendPlugin
 from typing_extensions import *
 from openai import OpenAI
+import asyncio
 
 class VLLMClient(BackendPlugin):
     '''
@@ -12,31 +13,33 @@ class VLLMClient(BackendPlugin):
         self.api_base = api_base
         self.max_parallel = max_parallel
         
-        self.client = OpenAI(
+        self.clients = [OpenAI(
             api_key=api_key,
             base_url=api_base,
-        )
+        ) for _ in range(max_parallel)]
         
-        models = self.client.models.list()
+        models = self.clients[0].models.list()
         self.model = models.data[0].id
         
     def process(self, querys:List[str], labels:List[str], *args, **kwargs):
-        messages = [
+        messages = [[
             {
                 "role": "user",
                 "content": query,
             }
-            for query in querys
-        ]
+        ] for query in querys]
+
+        async def single_submit(message, client):
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=message
+            )
+            return response.choices[0].message.content
         
-        responses = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            # max_tokens=128,
-            n = self.max_parallel
-        )
-        
-        responses_text = [response.message.content for response in responses.choices]
-        
-        return responses_text
+        async def submit_all():
+            tasks = [single_submit(message, client) for message, client in zip(messages, self.clients)]
+            result = await asyncio.gather(*tasks)
+            return result
+
+        return asyncio.run(submit_all())
     
